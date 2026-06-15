@@ -1,5 +1,9 @@
 package com.server.app.services;
 
+import com.server.app.config.JsonWebToken;
+import com.server.app.dto.auth.*;
+import com.server.app.exceptions.BadRequestException;
+import com.server.app.exceptions.UnauthorizedException;
 import lombok.AllArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -23,6 +27,7 @@ public class UserService {
   private final PasswordEncoder passwordEncoder;
   private final UserRepository userRepository;
   private final RoleRepository roleRepository;
+  private final JsonWebToken jwtUtil;
 
   @Transactional
   public User create(UserCreateDto dto) {
@@ -93,6 +98,80 @@ public class UserService {
       user.setPassword(dto.getPassword());
     }
 
+    return userRepository.save(user);
+  }
+
+  @Transactional
+  public AuthResponse login(LoginRequest request) {
+    User user = userRepository.findUserByUsername(request.getUsername())
+            .orElseThrow(() -> new UnauthorizedException("Credenciales inválidas"));
+
+    if (!passwordEncoder.matches(request.getPassword(), user.getPassword())) {
+      throw new UnauthorizedException("Credenciales inválidas");
+    }
+    if (user.isBlocked()) {
+      throw new UnauthorizedException("Tu cuenta ha sido bloqueada");
+    }
+    if (user.getRole() == null || !user.getRole().getActive()) {
+      throw new UnauthorizedException("El rol de tu cuenta no está activo");
+    }
+
+    return new AuthResponse(jwtUtil.createToken(user), user);
+  }
+
+  @Transactional
+  public AuthResponse signUp(SignUpRequest request) {
+    uniqueUsername(request.getUsername(), null);
+    uniqueEmail(request.getEmail(), null);
+
+    Role role = roleRepository.findByName("ADMIN")
+            .orElseThrow(() -> new NotFoundException("Rol ADMIN no encontrado"));
+
+    if (!role.getActive()) {
+      throw new UnauthorizedException("El rol ADMIN no está activo");
+    }
+
+    User user = User.builder()
+            .username(request.getUsername())
+            .name(request.getName())
+            .surname(request.getSurname())
+            .email(request.getEmail())
+            .password(passwordEncoder.encode(request.getPassword()))
+            .role(role)
+            .build();
+
+    userRepository.save(user);
+    return new AuthResponse(jwtUtil.createToken(user), user);
+  }
+
+  @Transactional
+  public AuthResponse updateProfile(int userId, UpdateProfileRequest request) {
+    User user = findById(userId);
+
+    uniqueUsername(request.getUsername(), userId);
+    uniqueEmail(request.getEmail(), userId);
+
+    user.setUsername(request.getUsername());
+    user.setName(request.getName());
+    user.setSurname(request.getSurname());
+    user.setEmail(request.getEmail());
+
+    userRepository.save(user);
+    return new AuthResponse(jwtUtil.createToken(user), user);
+  }
+
+  @Transactional
+  public User updatePassword(int userId, UpdatePasswordRequest request) {
+    User user = findById(userId);
+
+    if (!passwordEncoder.matches(request.getOldpassword(), user.getPassword())) {
+      throw new BadRequestException("La contraseña actual es incorrecta");
+    }
+    if (!request.getNewpassword().equals(request.getConfirmpassword())) {
+      throw new BadRequestException("Las contraseñas nuevas no coinciden");
+    }
+
+    user.setPassword(passwordEncoder.encode(request.getNewpassword()));
     return userRepository.save(user);
   }
 
